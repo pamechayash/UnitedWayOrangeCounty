@@ -30,6 +30,16 @@ public class ICarolServiceWrapper {
     }
 
     public class Contact {
-        public String city;
+         public Double latitude;
+    public Double longitude;
+    public String line1;
+    public String line2;
+    public String county;
+    public String city;
+    public String stateProvince;
+    public String country;
+    public String zipPostalCode;
+    public String type;
+        
     }
 }

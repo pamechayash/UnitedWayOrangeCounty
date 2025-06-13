@@ -1,7 +1,8 @@
-public class ICarolServiceSyncBatch implements Database.Batchable<Service__c>, Database.Stateful, Database.AllowsCallouts {
+public class ICarolServiceSyncBatch implements Database.Batchable<Service__c> , Database.Stateful, Database.AllowsCallouts {
     
     private static final String BASE_URL = 'https://api.icarol.com/v1';
     private static final String BEARER_TOKEN = 'Bearer E4F42E57-A48C-4962-9474-AF119555EEA9'; 
+    public Map<String,List<Site__c>>  serviceSiteMapping = new Map<String,List<Site__c>>();    
     
     public List<Service__c> start(Database.BatchableContext bc) {
         List<Service__c> recordsToInsert = new List<Service__c>();
@@ -29,20 +30,19 @@ public class ICarolServiceSyncBatch implements Database.Batchable<Service__c>, D
             if (httpResponse.getStatusCode() == 200) {
                 try {
                     ICarolServiceWrapper searchServiceResponse = (ICarolServiceWrapper) JSON.deserialize(httpResponse.getBody(), ICarolServiceWrapper.class);
-                    
-                    Integer i = 0;
+
+                    System.debug('searchServiceResponse'+searchServiceResponse);
+
+            
                     for (ICarolServiceWrapper.Result result : searchServiceResponse.results) {
-                        if (i >= 1) break;
-                        i++;
-                        
-                        
+                       
                         ICarolServiceWrapper.Resource res = result.resource;
                         Service__c svc = new Service__c();
                         
                         svc.iCarol_Id__c = res.id;
                         svc.Description__c = res.description;
                         svc.Taxonomy_Level_Name__c = res.type;
-                        svc.Status__c = res.status;
+                        svc.Status__c = 'Inactive';
                         
                         // Names
                         for (ICarolServiceWrapper.Name name : res.names) {
@@ -51,15 +51,37 @@ public class ICarolServiceSyncBatch implements Database.Batchable<Service__c>, D
                         }
                         
                         // Related Agencies
+                        List<Site__c> siteList = new List<Site__c>();
                         for (ICarolServiceWrapper.Related rel : res.related) {
+                            
                             if (rel.type == 'Agency') {
-                                Id agencyId = getAgencyAccountIdByName(rel.name);
-                                if (agencyId != null) svc.Agency__c = agencyId;
+                                Account  accountRec = findOrCreateAgencyAccountByName(rel.name);
+                                svc.Agency__c = accountRec.Id;
+                                recordsToInsert.add(svc); 
                             }
+                            
+                            if (rel.type == 'Site'){
+                                Site__c siteRec = new Site__c();
+                                siteRec.Name = rel.name;
+                                siteRec.Physical_Geolocation__Latitude__s = rel.contact.latitude;
+                                siteRec.Physical_Geolocation__Longitude__s = rel.contact.longitude;
+                                // siteRec.City__c = rel.contact.city; restricted picklist
+                                siteRec.Physical_Postal_Code__c = rel.contact.zipPostalCode;
+                                if(svc.Agency__c!=null){
+                                    siteRec.Agency__c  =  svc.Agency__c;
+                                }
+                                siteList.add(siteRec);
+                                
+                                
+                            }
+                            
+                            
                         }
-                        
-                        recordsToInsert.add(svc);
-                    }
+         
+                        insert siteList;
+                        serviceSiteMapping.put(res.id,siteList);
+                    } 
+                    System.debug('serviceSiteMapping'+serviceSiteMapping);
                 } catch (Exception parseEx) {
                     System.debug('Error parsing service response: ' + parseEx.getMessage());
                 }
@@ -75,23 +97,56 @@ public class ICarolServiceSyncBatch implements Database.Batchable<Service__c>, D
     
     public void execute(Database.BatchableContext bc, List<Service__c> recordsToInsert) {
         try {
+            System.debug('serviceSiteMapping'+serviceSiteMapping);
             insert recordsToInsert;
+            List<Service_Site__c> serviceSiteToInsert = new  List<Service_Site__c>();
+            for(Service__c serviceRecord : recordsToInsert){
+                List<Site__c> siteListForService = serviceSiteMapping.get(serviceRecord.iCarol_Id__c);
+                
+                for(Site__c siteRec:siteListForService){
+                    Service_Site__c serviceSite = new Service_Site__c();
+                    serviceSite.Site__c = siteRec.Id;
+                    serviceSite.Service__c = serviceRecord.Id; 
+                    serviceSiteToInsert.add(serviceSite);
+                }
+                
+            }
+            system.debug('serviceSiteToInsertBefore'+serviceSiteToInsert);
+            insert serviceSiteToInsert;
+            system.debug('serviceSiteToInsert'+serviceSiteToInsert);
+            
         } catch (DmlException dmlEx) {
             System.debug('DML error while inserting services: ' + dmlEx.getMessage());
         }
     }
     
-    private static Id getAgencyAccountIdByName(String name) {
+    private static Account findOrCreateAgencyAccountByName(String agencyName) {
         try {
-            List<Account> accs = [SELECT Id FROM Account WHERE Name = :name LIMIT 2];
-            return accs.size() == 1 ? accs[0].Id : null;
+            List<Account> accs = [SELECT Id FROM Account WHERE  RecordType.Name = 'Agency' and Name = :agencyName LIMIT 1];
+            if(accs.size()>0){
+                return accs[0];
+            }
+            else
+            {
+                Account newAcc = new Account(Name=agencyName,recordTypeId = [
+                    SELECT Id 
+                    FROM RecordType 
+                    WHERE SObjectType = 'Account' 
+                    AND Name = 'Agency' 
+                    LIMIT 1
+                ].Id);
+                insert newAcc;
+                return newAcc;
+            }
+            
+            
         } catch (Exception ex) {
-            System.debug('Error fetching agency by name (' + name + '): ' + ex.getMessage());
+            System.debug('Error fetching agency by name (' + agencyName + '): ' + ex.getMessage());
             return null;
         }
     }
     
     public void finish(Database.BatchableContext bc) {
-
+        
     }
 }
